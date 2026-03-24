@@ -324,6 +324,26 @@ export const SoundProvider = ({ children }: PropsWithChildren) => {
     }
   }, [gameId, adventurer, beast, musicMuted, location.pathname]);
 
+  // Listen for postMessage volume control from parent (e.g. Hydra iframe embed)
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.data?.type === "set_volume" && typeof event.data.volume === "number") {
+        const v = Math.max(0, Math.min(1, event.data.volume));
+        if (v === 0) {
+          setMusicMuted(true);
+          setMuted(true);
+        } else {
+          setMusicMuted(false);
+          setMuted(false);
+          setMusicVolume(v);
+          setVolume(v);
+        }
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
   useEffect(() => {
     return () => {
       audioManager.current.destroy();
