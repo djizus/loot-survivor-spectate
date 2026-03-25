@@ -3,14 +3,16 @@ import AdventurerStats from "@/desktop/components/AdventurerStats";
 import ItemTooltip from "@/desktop/components/ItemTooltip";
 import { useResponsiveScale } from "@/desktop/hooks/useResponsiveScale";
 import { useGameStore } from "@/stores/gameStore";
+import { useMarketStore } from "@/stores/marketStore";
 import { useUIStore } from "@/stores/uiStore";
 import type { Item } from "@/types/game";
-import { calculateAttackDamage, calculateBeastDamage, calculateLevel } from "@/utils/game";
+import { calculateAttackDamage, calculateBeastDamage, calculateCombatStats, calculateLevel } from "@/utils/game";
 import { ItemUtils } from "@/utils/loot";
+import { getCartItemPlacements } from "@/utils/market";
 import { keyframes } from "@emotion/react";
 import { Star } from "@mui/icons-material";
 import { Box, Tooltip, Typography } from "@mui/material";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type EquipmentSlot = "weapon" | "chest" | "head" | "waist" | "foot" | "hand" | "neck" | "ring";
 
@@ -97,6 +99,7 @@ function CharacterEquipment({
 	onItemClick,
 	newItems,
 	onItemHover,
+	disabledEquip,
 	previewEquipped,
 }: {
 	isDropMode: boolean;
@@ -104,6 +107,7 @@ function CharacterEquipment({
 	onItemClick: (item: any) => void;
 	newItems: number[];
 	onItemHover: (itemId: number) => void;
+	disabledEquip?: boolean;
 	previewEquipped?: Record<string, Item>;
 }) {
 	const { adventurer, beast } = useGameStore();
@@ -375,12 +379,221 @@ function CharacterEquipment({
 	);
 }
 
+function InventoryBag({
+	isDropMode,
+	itemsToDrop,
+	onItemClick,
+	newItems,
+	onItemHover,
+	previewBag,
+}: {
+	isDropMode: boolean;
+	itemsToDrop: number[];
+	onItemClick: (item: any) => void;
+	newItems: number[];
+	onItemHover: (itemId: number) => void;
+	previewBag?: Item[];
+}) {
+	const { bag, adventurer, beast } = useGameStore();
+	const { advancedMode } = useUIStore();
+
+	// Combine actual bag with preview items
+	const displayBag = [...(bag || []), ...(previewBag || [])];
+	const previewItemIds = new Set((previewBag || []).map((item) => item.id));
+
+	// Calculate combat stats to get bestItems for defense highlighting
+	const combatStats = beast ? calculateCombatStats(adventurer!, bag, beast) : null;
+	const bestItemIds = combatStats?.bestItems.map((item: Item) => item.id) || [];
+
+	return (
+		<Box sx={styles.bagPanel}>
+			<Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 0.5 }}>
+				<Typography variant="h6">
+					Bag ({displayBag?.length || 0}/{15})
+				</Typography>
+				<Typography variant="h6" color="secondary">
+					{adventurer?.gold || 0} gold
+				</Typography>
+			</Box>
+
+			<Box sx={styles.bagGrid}>
+				{displayBag?.map((item, index) => {
+					const isPreview = previewItemIds.has(item.id);
+					const metadata = ItemUtils.getMetadata(item.id);
+					const isSelected = !isPreview && itemsToDrop.includes(item.id);
+					const highlight = !isPreview && isDropMode && itemsToDrop.length === 0;
+					const isNew = !isPreview && newItems.includes(item.id);
+					const tier = ItemUtils.getItemTier(item.id);
+					const tierColor = ItemUtils.getTierColor(tier);
+					const level = calculateLevel(item.xp);
+					const isNameMatch = beast
+						? ItemUtils.isNameMatch(item.id, level, adventurer!.item_specials_seed, beast)
+						: false;
+					const isArmorSlot = ["head", "chest", "foot", "hand", "waist"].includes(
+						ItemUtils.getItemSlot(item.id).toLowerCase(),
+					);
+					const isWeaponSlot = ItemUtils.getItemSlot(item.id).toLowerCase() === "weapon";
+					const isNameMatchDanger = !isPreview && isNameMatch && isArmorSlot;
+					const isNameMatchPower = !isPreview && isNameMatch && isWeaponSlot;
+					const isDefenseItem = !isPreview && bestItemIds.includes(item.id);
+					const hasSpecials = level >= 15;
+					const hasGoldSpecials = level >= 20;
+
+					// Calculate damage values for bag items (skip for preview items)
+					let damage = 0;
+					let damageTaken = 0;
+					let critDamage = 0;
+					let critDamageTaken = 0;
+					if (beast && !isPreview) {
+						if (isArmorSlot) {
+							const damageResult = calculateBeastDamage(beast, adventurer!, item);
+							damageTaken = damageResult.baseDamage;
+							critDamageTaken = damageResult.criticalDamage;
+						} else if (isWeaponSlot) {
+							const damageResult = calculateAttackDamage(item, adventurer!, beast);
+							damage = damageResult.baseDamage;
+							critDamage = damageResult.criticalDamage;
+						}
+					}
+
+					return (
+						<Tooltip
+							key={`${item.id}-${index}${isPreview ? "-preview" : ""}`}
+							title={
+								<ItemTooltip
+									item={item}
+									itemSpecialsSeed={adventurer?.item_specials_seed || 0}
+									style={styles.tooltipContainer}
+								/>
+							}
+							placement="top-start"
+							slotProps={{
+								popper: {
+									modifiers: [
+										{
+											name: "flip",
+											enabled: false,
+										},
+										{
+											name: "preventOverflow",
+											enabled: true,
+											options: { rootBoundary: "viewport", altAxis: true },
+										},
+										{
+											name: "offset",
+											options: { offset: [30, 200] },
+										},
+									],
+								},
+								tooltip: {
+									sx: {
+										bgcolor: "transparent",
+										border: "none",
+									},
+								},
+							}}
+						>
+							<Box
+								sx={[
+									styles.bagSlot,
+									...(isPreview ? [styles.previewItem] : []),
+									...(isSelected ? [styles.selectedItem] : []),
+									...(highlight ? [styles.highlight] : []),
+									...(isNew ? [styles.newItem] : []),
+									...(isNameMatchDanger ? [styles.nameMatchDangerSlot] : []),
+									...(isNameMatchPower ? [styles.nameMatchPowerSlot] : []),
+									...(isDefenseItem ? [styles.defenseItemSlot] : []),
+								]}
+								onClick={() => !isPreview && onItemClick(item)}
+								onMouseEnter={() => !isPreview && onItemHover(item.id)}
+							>
+								<Box sx={styles.itemImageContainer}>
+									<Box sx={[styles.itemGlow, { backgroundColor: tierColor }]} />
+									{(isNameMatchDanger || isNameMatchPower) && (
+										<Box
+											sx={[
+												styles.nameMatchGlow,
+												isNameMatchDanger ? styles.nameMatchDangerGlow : styles.nameMatchPowerGlow,
+											]}
+										/>
+									)}
+									<img
+										src={metadata.imageUrl}
+										alt={metadata.name}
+										style={{ ...styles.bagIcon, position: "relative" }}
+									/>
+									{hasSpecials && (
+										<Box sx={[styles.starOverlay, hasGoldSpecials ? styles.goldStarOverlay : styles.silverStarOverlay]}>
+											<Star sx={[styles.starIcon, hasGoldSpecials ? styles.goldStarIcon : styles.silverStarIcon]} />
+										</Box>
+									)}
+									{/* Damage Indicator Overlay for Bag Items */}
+									{(damage > 0 || damageTaken > 0) && (
+										<Box
+											sx={[
+												styles.damageIndicator,
+												isArmorSlot ? styles.damageIndicatorRed : styles.damageIndicatorGreen,
+											]}
+										>
+											<Typography
+												sx={[
+													styles.damageIndicatorText,
+													isArmorSlot ? styles.damageIndicatorTextRed : styles.damageIndicatorTextGreen,
+												]}
+											>
+												{isArmorSlot ? `-${damageTaken}` : `+${damage}`}
+											</Typography>
+										</Box>
+									)}
+									{/* Level Label */}
+									<Box sx={styles.levelLabel}>{level}</Box>
+									{/* Crit Damage Indicator (Advanced Mode) */}
+									{advancedMode && (critDamage > 0 || critDamageTaken > 0) && (
+										<Box
+											sx={[
+												styles.critDamageIndicator,
+												isArmorSlot ? styles.critDamageIndicatorRed : styles.critDamageIndicatorGreen,
+											]}
+										>
+											<Typography
+												sx={[
+													styles.damageIndicatorText,
+													isArmorSlot ? styles.damageIndicatorTextRed : styles.damageIndicatorTextGreen,
+												]}
+											>
+												{isArmorSlot ? `-${critDamageTaken}` : `+${critDamage}`}
+											</Typography>
+										</Box>
+									)}
+								</Box>
+							</Box>
+						</Tooltip>
+					);
+				})}
+				{Array(Math.max(0, 15 - displayBag.length))
+					.fill(null)
+					.map((_, idx) => (
+						<Box key={`empty-${idx}`} sx={styles.bagSlot}>
+							<Box sx={styles.emptySlot}></Box>
+						</Box>
+					))}
+			</Box>
+		</Box>
+	);
+}
+
 export default function InventoryOverlay({ disabledEquip }: InventoryOverlayProps) {
 	const { advancedMode } = useUIStore();
-	const { showInventory, setShowInventory } = useGameStore();
+	const { adventurer } = useGameStore();
+	const { cart } = useMarketStore();
 	const { scalePx } = useResponsiveScale();
 	const { equipItem, newInventoryItems, setNewInventoryItems } = useGameStore();
 	const [newItems, setNewItems] = useState<number[]>([]);
+
+	// Calculate preview items from cart (which items would be equipped vs go to bag)
+	const cartPreview = useMemo(() => {
+		return getCartItemPlacements(cart.items, adventurer ?? null);
+	}, [cart.items, adventurer?.equipment]);
 
 	// Update newItems when newInventoryItems changes and clear newInventoryItems
 	useEffect(() => {
@@ -412,54 +625,33 @@ export default function InventoryOverlay({ disabledEquip }: InventoryOverlayProp
 
 	return (
 		<>
-			<Box
-				sx={{
-					display: "flex",
-					flexDirection: "column",
-					alignItems: "center",
-					position: "absolute",
-					bottom: 24,
-					left: 24,
-					zIndex: 100,
-				}}
-			>
-				<Box
-					sx={[styles.buttonWrapper, advancedMode && styles.advancedButtonWrapper]}
-					onClick={() => setShowInventory(!showInventory)}
-				>
-					<img
-						src={"/images/inventory.png"}
-						alt="Inventory"
-						style={{
-							width: "100%",
-							height: "100%",
-							objectFit: "contain",
-							display: "block",
-							filter: "hue-rotate(40deg) saturate(1.5) brightness(1.15) contrast(1.2)",
-						}}
+			{/* Inventory popup */}
+			<Box sx={[styles.popup, advancedMode && styles.advancedPopup, { left: scalePx(8) }]}>
+				<Box sx={styles.inventoryRoot}>
+					{/* Left: Equipment */}
+					<CharacterEquipment
+						isDropMode={false}
+						itemsToDrop={[]}
+						onItemClick={handleItemClick}
+						newItems={newItems}
+						onItemHover={handleItemHover}
+						disabledEquip={disabledEquip}
+						previewEquipped={cartPreview.previewEquipped}
 					/>
+					{/* Right: Stats */}
+					<AdventurerStats />
 				</Box>
-				{!advancedMode && <Typography sx={styles.inventoryLabel}>Inventory</Typography>}
+
+				{/* Bottom: Bag */}
+				<InventoryBag
+					isDropMode={false}
+					itemsToDrop={[]}
+					onItemClick={handleItemClick}
+					newItems={newItems}
+					onItemHover={handleItemHover}
+					previewBag={cartPreview.previewBag}
+				/>
 			</Box>
-			{showInventory && (
-				<>
-					{/* Inventory popup */}
-					<Box sx={[styles.popup, advancedMode && styles.advancedPopup, { left: scalePx(8) }]}>
-						<Box sx={styles.inventoryRoot}>
-							{/* Left: Equipment */}
-							<CharacterEquipment
-								isDropMode={false}
-								itemsToDrop={[]}
-								onItemClick={handleItemClick}
-								newItems={newItems}
-								onItemHover={handleItemHover}
-							/>
-							{/* Right: Stats */}
-							<AdventurerStats />
-						</Box>
-					</Box>
-				</>
-			)}
 		</>
 	);
 }
